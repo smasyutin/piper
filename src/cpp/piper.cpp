@@ -2,6 +2,7 @@
 #include <chrono>
 #include <fstream>
 #include <limits>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 
@@ -169,6 +170,26 @@ void parseSynthesisConfig(json &configRoot, SynthesisConfig &synthesisConfig) {
 
     if (inferenceValue.contains("noise_w")) {
       synthesisConfig.noiseW = inferenceValue.value("noise_w", 0.8f);
+    }
+
+    if (inferenceValue.contains("noise_scale_delta")) {
+      synthesisConfig.noiseScaleDelta = inferenceValue.value("noise_scale_delta", 0.05f);
+    }
+
+    if (inferenceValue.contains("length_scale_delta")) {
+      synthesisConfig.lengthScaleDelta = inferenceValue.value("length_scale_delta", 0.05f);
+    }
+
+    if (inferenceValue.contains("noise_w_delta")) {
+      synthesisConfig.noiseWDelta = inferenceValue.value("noise_w_delta", 0.05f);
+    }
+
+    if (inferenceValue.contains("volume_delta")) {
+      synthesisConfig.volumeDelta = inferenceValue.value("volume_delta", 0.05f);
+    }
+
+    if (inferenceValue.contains("sentence_silence")) {
+      synthesisConfig.sentenceSilenceSeconds = inferenceValue.value("sentence_silence", 0.2f);
     }
 
     if (inferenceValue.contains("phoneme_silence")) {
@@ -420,7 +441,7 @@ void synthesize(std::vector<PhonemeId> &phonemeIds,
   audioBuffer.reserve(audioCount);
 
   // Scale audio to fill range and convert to int16
-  float audioScale = (MAX_WAV_VALUE / std::max(0.01f, maxAudioValue));
+  float audioScale = (synthesisConfig.volume * MAX_WAV_VALUE / std::max(0.01f, maxAudioValue));
   for (int64_t i = 0; i < audioCount; i++) {
     int16_t intAudioValue = static_cast<int16_t>(
         std::clamp(audio[i] * audioScale,
@@ -447,12 +468,16 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
                  std::vector<int16_t> &audioBuffer, SynthesisResult &result,
                  const std::function<void()> &audioCallback) {
 
-  std::size_t sentenceSilenceSamples = 0;
-  if (voice.synthesisConfig.sentenceSilenceSeconds > 0) {
-    sentenceSilenceSamples = (std::size_t)(
-        voice.synthesisConfig.sentenceSilenceSeconds *
-        voice.synthesisConfig.sampleRate * voice.synthesisConfig.channels);
-  }
+  std::random_device silenceRandomDevice;
+  std::mt19937 randomGen(silenceRandomDevice());
+
+  std::uniform_real_distribution<> lengthScaleDistribution(voice.synthesisConfig.lengthScale - voice.synthesisConfig.lengthScaleDelta, voice.synthesisConfig.lengthScale + voice.synthesisConfig.lengthScaleDelta);
+
+  std::uniform_real_distribution<> noiseScaleDistribution(voice.synthesisConfig.noiseScale - voice.synthesisConfig.noiseScaleDelta, voice.synthesisConfig.noiseScale + voice.synthesisConfig.noiseScaleDelta);
+
+  std::uniform_real_distribution<> noiseWDistribution(voice.synthesisConfig.noiseW - voice.synthesisConfig.noiseWDelta, voice.synthesisConfig.noiseW + voice.synthesisConfig.noiseWDelta);
+
+  std::uniform_real_distribution<> volumeDistribution(voice.synthesisConfig.volume - voice.synthesisConfig.volumeDelta, voice.synthesisConfig.volume);
 
   if (config.useTashkeel) {
     if (!config.tashkeelState) {
@@ -481,10 +506,7 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
   // Synthesize each sentence independently.
   std::vector<PhonemeId> phonemeIds;
   std::map<Phoneme, std::size_t> missingPhonemes;
-  for (auto phonemesIter = phonemes.begin(); phonemesIter != phonemes.end();
-       ++phonemesIter) {
-    std::vector<Phoneme> &sentencePhonemes = *phonemesIter;
-
+  for (auto& sentencePhonemes : phonemes) {
     if (spdlog::should_log(spdlog::level::debug)) {
       // DEBUG log for phonemes
       std::string phonemesStr;
@@ -545,6 +567,14 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
       phraseSilenceSamples.push_back(0);
     }
 
+    SynthesisConfig synthesisConfig = voice.synthesisConfig;
+    // randomize values for each sentence
+    synthesisConfig.lengthScale = lengthScaleDistribution(randomGen);
+    synthesisConfig.noiseScale = noiseScaleDistribution(randomGen);
+    synthesisConfig.noiseW = noiseWDistribution(randomGen);
+    synthesisConfig.volume = volumeDistribution(randomGen);
+    spdlog::debug("synthesisConfig volume: {}, lengthScale: {}, noiseScale: {}, noiseW: {}", synthesisConfig.volume, synthesisConfig.lengthScale, synthesisConfig.noiseScale, synthesisConfig.noiseW);
+
     // phonemes -> ids -> audio
     for (size_t phraseIdx = 0; phraseIdx < phrasePhonemes.size(); phraseIdx++) {
       if (phrasePhonemes[phraseIdx]->size() <= 0) {
@@ -567,7 +597,7 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
       }
 
       // ids -> audio
-      synthesize(phonemeIds, voice.synthesisConfig, voice.session, audioBuffer,
+      synthesize(phonemeIds, synthesisConfig, voice.session, audioBuffer,
                  phraseResults[phraseIdx]);
 
       // Add end of phrase silence
@@ -581,11 +611,13 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
       phonemeIds.clear();
     }
 
-    // Add end of sentence silence
-    if (sentenceSilenceSamples > 0) {
-      for (std::size_t i = 0; i < sentenceSilenceSamples; i++) {
-        audioBuffer.push_back(0);
-      }
+    // Add sentence silence
+    std::size_t sentencePauseDuration = 1000 * voice.synthesisConfig.sentenceSilenceSeconds * synthesisConfig.lengthScale;
+    spdlog::debug("sentencePauseDuration: {}ms", sentencePauseDuration);
+
+    std::size_t sentenceSilenceSamples = sentencePauseDuration * (voice.synthesisConfig.sampleRate / 1000 * voice.synthesisConfig.channels);
+    for (std::size_t i = 0; i < sentenceSilenceSamples; i++) {
+      audioBuffer.push_back(0);
     }
 
     if (audioCallback) {

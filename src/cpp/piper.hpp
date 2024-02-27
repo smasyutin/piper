@@ -55,10 +55,17 @@ struct SynthesisConfig {
   float lengthScale = 1.0f;
   float noiseW = 0.8f;
 
+  // randomization
+  float noiseScaleDelta = 0.05f;
+  float lengthScaleDelta = 0.05f;
+  float noiseWDelta = 0.05f;
+  float volumeDelta = 0.05f;
+
   // Audio settings
   int sampleRate = 22050;
   int sampleWidth = 2; // 16-bit
   int channels = 1;    // mono
+  float volume = 1.0f; // full scale
 
   // Speaker id from 0 to numSpeakers - 1
   std::optional<SpeakerId> speakerId;
