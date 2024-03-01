@@ -264,16 +264,15 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    // Timestamp is used for path to output WAV file
-    const auto now = chrono::system_clock::now();
-    const auto timestamp =
-        chrono::duration_cast<chrono::nanoseconds>(now.time_since_epoch())
-            .count();
-
     if (outputType == OUTPUT_DIRECTORY) {
-      // Generate path using timestamp
+      // Timestamp is used for path to output WAV file
+      const auto now = chrono::system_clock::now();
+      const auto timestamp = chrono::duration_cast<chrono::nanoseconds>(now.time_since_epoch()).count();
+      const auto t = std::chrono::system_clock::to_time_t(now);
+
+      // Generate path using timestamp in a human readable format close to ISO8601
       stringstream outputName;
-      outputName << timestamp << ".wav";
+      outputName << std::put_time(std::localtime(&t), "%FT%T.") << (timestamp % 1000000000) / 1000 << ".wav";
       filesystem::path outputPath = runConfig.outputPath.value();
       outputPath.append(outputName.str());
 
