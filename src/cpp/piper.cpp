@@ -27,7 +27,8 @@ const std::string VERSION = "";
 #endif
 
 // Maximum value for 16-bit signed WAV sample
-const float MAX_WAV_VALUE = 32767.0f;
+// we decrease it by 7 to elimibate clipping
+const float MAX_WAV_VALUE = 32767.0f - 7;
 
 const std::string instanceName{"piper"};
 
