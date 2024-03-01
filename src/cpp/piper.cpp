@@ -605,6 +605,13 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
         audioBuffer.push_back(0);
       }
 
+      // push all synthesised audio into stream
+      if (audioCallback) {
+        // Call back must copy audio since it is cleared afterwards.
+        audioCallback();
+        audioBuffer.clear();
+      }
+
       result.audioSeconds += phraseResults[phraseIdx].audioSeconds;
       result.inferSeconds += phraseResults[phraseIdx].inferSeconds;
 
@@ -620,6 +627,7 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
       audioBuffer.push_back(0);
     }
 
+    // push the rest of the audio into stream
     if (audioCallback) {
       // Call back must copy audio since it is cleared afterwards.
       audioCallback();
