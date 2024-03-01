@@ -59,7 +59,7 @@ struct SynthesisConfig {
   float noiseScaleDelta = 0.05f;
   float lengthScaleDelta = 0.05f;
   float noiseWDelta = 0.05f;
-  float volumeDelta = 0.05f;
+  float volumeDelta = 0.03f;
 
   // Audio settings
   int sampleRate = 22050;
