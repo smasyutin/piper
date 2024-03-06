@@ -34,23 +34,20 @@ class PiperVoice:
         with open(config_path, "r", encoding="utf-8") as config_file:
             config_dict = json.load(config_file)
 
-        providers: List[Union[str, Tuple[str, Dict[str, Any]]]]
-        if use_cuda:
-            providers = [
-                (
-                    "CUDAExecutionProvider",
-                    {"cudnn_conv_algo_search": "HEURISTIC"},
-                )
-            ]
-        else:
-            providers = ["CPUExecutionProvider"]
-
         return PiperVoice(
             config=PiperConfig.from_dict(config_dict),
             session=onnxruntime.InferenceSession(
                 str(model_path),
                 sess_options=onnxruntime.SessionOptions(),
-                providers=providers,
+                providers=["CPUExecutionProvider"]
+                if not use_cuda
+                else [
+                    (
+                        "CUDAExecutionProvider",
+                        {"cudnn_conv_algo_search": "HEURISTIC"}
+                    ),
+                    "CPUExecutionProvider"
+                ],
             ),
         )
 
