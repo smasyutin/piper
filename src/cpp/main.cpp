@@ -249,32 +249,30 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
 
   svr.set_logger([](const Request& req, const Response& res) {
     spdlog::debug("handled {} -> {}", req.body, res.status);
-    });
+  });
 
   svr.Post("/tts", [&piperConfig, &voice](const Request& req, Response& res) {
     json data = json::parse(req.body);
     std::string line = data["text"];
 
-    res.set_chunked_content_provider(
-      "audio/opus",
-      [&, line](size_t offset, DataSink& sink) -> bool {
-        piper::SynthesisResult result;
-        vector<int16_t> audioBuffer;
+    res.set_chunked_content_provider("audio/opus", [&, line](size_t offset, DataSink& sink) -> bool {
+      piper::SynthesisResult result;
+      vector<int16_t> audioBuffer;
 
-        piper::textToAudio(piperConfig, voice, line, audioBuffer, result, [&audioBuffer, &sink]() {
-          // TODO encode opus
-          sink.write((char*)(audioBuffer.data()), sizeof(int16_t) / sizeof(char) * audioBuffer.size());
-          });
-
-        sink.done();
-
-        spdlog::info("Real-time factor: {} (infer={} sec, audio={} sec)",
-          result.realTimeFactor, result.inferSeconds,
-          result.audioSeconds);
-
-        return true;
+      piper::textToAudio(piperConfig, voice, line, audioBuffer, result, [&audioBuffer, &sink]() {
+        // TODO encode opus
+        sink.write((char*)(audioBuffer.data()), sizeof(int16_t) / sizeof(char) * audioBuffer.size());
       });
+
+      sink.done();
+
+      spdlog::info("Real-time factor: {} (infer={} sec, audio={} sec)",
+        result.realTimeFactor, result.inferSeconds,
+        result.audioSeconds);
+
+      return true;
     });
+  });
 
   auto address = "0.0.0.0";
   auto port = 8080;
@@ -566,8 +564,8 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
       auto phonemeStr = std::string(argv[++i]);
       if (!piper::isSingleCodepoint(phonemeStr)) {
         std::cerr << "Phoneme '" << phonemeStr
-                  << "' is not a single codepoint (--phoneme_silence)"
-                  << std::endl;
+          << "' is not a single codepoint (--phoneme_silence)"
+          << std::endl;
         exit(1);
       }
 
@@ -577,19 +575,15 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
 
       auto phoneme = piper::getCodepoint(phonemeStr);
       (*runConfig.phonemeSilenceSeconds)[phoneme] = stof(argv[++i]);
-    }
-    else if (arg == "--espeak_data") {
+    } else if (arg == "--espeak_data") {
       ensureArg(argc, argv, i);
       runConfig.eSpeakDataPath = filesystem::path(argv[++i]);
-    }
-    else if (arg == "--tashkeel_model") {
+    } else if (arg == "--tashkeel_model") {
       ensureArg(argc, argv, i);
       runConfig.tashkeelModelPath = filesystem::path(argv[++i]);
-    }
-    else if (arg == "--json_input") {
+    } else if (arg == "--json_input") {
       runConfig.jsonInput = true;
-    }
-    else if (arg == "--use_cuda") {
+    } else if (arg == "--use_cuda") {
       runConfig.useCuda = true;
     }
     else if (arg == "--server") {
