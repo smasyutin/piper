@@ -63,7 +63,7 @@ if(NOT DEFINED PIPER_PHONEMIZE_DIR)
   ExternalProject_Add(
     piper_phonemize_external
     PREFIX "${CMAKE_CURRENT_BINARY_DIR}/p"
-    URL "https://github.com/smasyutin/piper-phonemize/archive/refs/heads/onnxruntime-build-variable.zip"
+    URL "https://github.com/smasyutin/piper-phonemize/archive/refs/heads/master.zip"
     CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${PIPER_PHONEMIZE_DIR} -DUSE_CUDA=${USE_CUDA} -DONNXRUNTIME_VERSION=${ONNXRUNTIME_VERSION}
   )
   add_dependencies(piper piper_phonemize_external)
