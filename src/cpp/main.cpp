@@ -30,6 +30,8 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#define CPPHTTPLIB_USE_POLL
+#include "httplib.h"
 #include "json.hpp"
 #include "piper.hpp"
 
@@ -88,12 +90,17 @@ struct RunConfig {
 
   // true to use CUDA execution provider
   bool useCuda = false;
+
+  // true to start as http server
+  bool server = false;
 };
 
 void parseArgs(int argc, char *argv[], RunConfig &runConfig);
 void rawOutputProc(vector<int16_t> &sharedAudioBuffer, mutex &mutAudio,
                    condition_variable &cvAudio, bool &audioReady,
                    bool &audioFinished);
+void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice);
+void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice);
 
 // ----------------------------------------------------------------------------
 
@@ -221,6 +228,61 @@ int main(int argc, char *argv[]) {
 
   } // if phonemeSilenceSeconds
 
+  if (runConfig.server) {
+    runServer(runConfig, piperConfig, voice);
+  }
+  else {
+    runCommandLine(runConfig, piperConfig, voice);
+  }
+
+  piper::terminate(piperConfig);
+
+  return EXIT_SUCCESS;
+}
+
+// ----------------------------------------------------------------------------
+
+void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice) {
+  using namespace httplib;
+
+  Server svr;
+
+  svr.set_logger([](const Request& req, const Response& res) {
+    spdlog::debug("handled {} -> {}", req.body, res.status);
+    });
+
+  svr.Post("/tts", [&piperConfig, &voice](const Request& req, Response& res) {
+    json data = json::parse(req.body);
+    std::string line = data["text"];
+
+    res.set_chunked_content_provider(
+      "audio/opus",
+      [&, line](size_t offset, DataSink& sink) -> bool {
+        piper::SynthesisResult result;
+        vector<int16_t> audioBuffer;
+
+        piper::textToAudio(piperConfig, voice, line, audioBuffer, result, [&audioBuffer, &sink]() {
+          // TODO encode opus
+          sink.write((char*)(audioBuffer.data()), sizeof(int16_t) / sizeof(char) * audioBuffer.size());
+          });
+
+        sink.done();
+
+        spdlog::info("Real-time factor: {} (infer={} sec, audio={} sec)",
+          result.realTimeFactor, result.inferSeconds,
+          result.audioSeconds);
+
+        return true;
+      });
+    });
+
+  auto address = "0.0.0.0";
+  auto port = 8080;
+  spdlog::info("Starting server http://{}:{}", address, port);
+  svr.listen(address, port);
+}
+
+void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice) {
   if (runConfig.outputType == OUTPUT_DIRECTORY) {
     runConfig.outputPath = filesystem::absolute(runConfig.outputPath.value());
     spdlog::info("Output directory: {}", runConfig.outputPath.value().string());
@@ -244,21 +306,23 @@ int main(int argc, char *argv[]) {
         // Override output WAV file path
         outputType = OUTPUT_FILE;
         maybeOutputPath =
-            filesystem::path(lineRoot["output_file"].get<std::string>());
+          filesystem::path(lineRoot["output_file"].get<std::string>());
       }
 
       if (lineRoot.contains("speaker_id")) {
         // Override speaker id
         voice.synthesisConfig.speakerId =
-            lineRoot["speaker_id"].get<piper::SpeakerId>();
-      } else if (lineRoot.contains("speaker")) {
+          lineRoot["speaker_id"].get<piper::SpeakerId>();
+      }
+      else if (lineRoot.contains("speaker")) {
         // Resolve to id using speaker id map
         auto speakerName = lineRoot["speaker"].get<std::string>();
         if ((voice.modelConfig.speakerIdMap) &&
-            (voice.modelConfig.speakerIdMap->count(speakerName) > 0)) {
+          (voice.modelConfig.speakerIdMap->count(speakerName) > 0)) {
           voice.synthesisConfig.speakerId =
-              (*voice.modelConfig.speakerIdMap)[speakerName];
-        } else {
+            (*voice.modelConfig.speakerIdMap)[speakerName];
+        }
+        else {
           spdlog::warn("No speaker named: {}", speakerName);
         }
       }
@@ -280,7 +344,8 @@ int main(int argc, char *argv[]) {
       ofstream audioFile(outputPath.string(), ios::binary);
       piper::textToWavFile(piperConfig, voice, line, audioFile, result);
       cout << outputPath.string() << endl;
-    } else if (outputType == OUTPUT_FILE) {
+    }
+    else if (outputType == OUTPUT_FILE) {
       if (!maybeOutputPath || maybeOutputPath->empty()) {
         throw runtime_error("No output path provided");
       }
@@ -303,10 +368,12 @@ int main(int argc, char *argv[]) {
       ofstream audioFile(outputPath.string(), ios::binary);
       piper::textToWavFile(piperConfig, voice, line, audioFile, result);
       cout << outputPath.string() << endl;
-    } else if (outputType == OUTPUT_STDOUT) {
+    }
+    else if (outputType == OUTPUT_STDOUT) {
       // Output WAV to stdout
       piper::textToWavFile(piperConfig, voice, line, cout, result);
-    } else if (outputType == OUTPUT_RAW) {
+    }
+    else if (outputType == OUTPUT_RAW) {
       // Raw output to stdout
       mutex mutAudio;
       condition_variable cvAudio;
@@ -322,21 +389,21 @@ int main(int argc, char *argv[]) {
 #endif
 
       thread rawOutputThread(rawOutputProc, ref(sharedAudioBuffer),
-                             ref(mutAudio), ref(cvAudio), ref(audioReady),
-                             ref(audioFinished));
+        ref(mutAudio), ref(cvAudio), ref(audioReady),
+        ref(audioFinished));
       auto audioCallback = [&audioBuffer, &sharedAudioBuffer, &mutAudio,
-                            &cvAudio, &audioReady]() {
+        &cvAudio, &audioReady]() {
         // Signal thread that audio is ready
-        {
-          unique_lock lockAudio(mutAudio);
-          copy(audioBuffer.begin(), audioBuffer.end(),
-               back_inserter(sharedAudioBuffer));
-          audioReady = true;
-          cvAudio.notify_one();
-        }
-      };
+          {
+            unique_lock lockAudio(mutAudio);
+            copy(audioBuffer.begin(), audioBuffer.end(),
+              back_inserter(sharedAudioBuffer));
+            audioReady = true;
+            cvAudio.notify_one();
+          }
+        };
       piper::textToAudio(piperConfig, voice, line, audioBuffer, result,
-                         audioCallback);
+        audioCallback);
 
       // Signal thread that there is no more audio
       {
@@ -352,22 +419,16 @@ int main(int argc, char *argv[]) {
     }
 
     spdlog::info("Real-time factor: {} (infer={} sec, audio={} sec)",
-                 result.realTimeFactor, result.inferSeconds,
-                 result.audioSeconds);
+      result.realTimeFactor, result.inferSeconds,
+      result.audioSeconds);
 
     // Restore config (--json-input)
     voice.synthesisConfig.speakerId = speakerId;
 
   } // for each line
-
-  piper::terminate(piperConfig);
-
-  return EXIT_SUCCESS;
 }
 
-// ----------------------------------------------------------------------------
-
-void rawOutputProc(vector<int16_t> &sharedAudioBuffer, mutex &mutAudio,
+void rawOutputProc(vector<int16_t>& sharedAudioBuffer, mutex& mutAudio,
                    condition_variable &cvAudio, bool &audioReady,
                    bool &audioFinished) {
   vector<int16_t> internalAudioBuffer;
@@ -439,6 +500,8 @@ void printUsage(char *argv[]) {
        << endl;
   cerr << "   --use-cuda                    use CUDA execution provider"
        << endl;
+  cerr << "   --server                      start as HTTP server"
+    << endl;
   cerr << "   --debug                       print DEBUG messages to the console"
        << endl;
   cerr << "   -q       --quiet              disable logging" << endl;
@@ -514,16 +577,23 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
 
       auto phoneme = piper::getCodepoint(phonemeStr);
       (*runConfig.phonemeSilenceSeconds)[phoneme] = stof(argv[++i]);
-    } else if (arg == "--espeak_data" || arg == "--espeak-data") {
+    }
+    else if (arg == "--espeak_data") {
       ensureArg(argc, argv, i);
       runConfig.eSpeakDataPath = filesystem::path(argv[++i]);
-    } else if (arg == "--tashkeel_model" || arg == "--tashkeel-model") {
+    }
+    else if (arg == "--tashkeel_model") {
       ensureArg(argc, argv, i);
       runConfig.tashkeelModelPath = filesystem::path(argv[++i]);
-    } else if (arg == "--json_input" || arg == "--json-input") {
+    }
+    else if (arg == "--json_input") {
       runConfig.jsonInput = true;
-    } else if (arg == "--use_cuda" || arg == "--use-cuda") {
+    }
+    else if (arg == "--use_cuda") {
       runConfig.useCuda = true;
+    }
+    else if (arg == "--server") {
+      runConfig.server = true;
     } else if (arg == "--version") {
       std::cout << piper::getVersion() << std::endl;
       exit(0);
