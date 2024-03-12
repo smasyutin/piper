@@ -1,7 +1,7 @@
 .PHONY: clean docker
 
 all:
-	cmake -Bbuild -DCMAKE_INSTALL_PREFIX=install
+	cmake -Bbuild -DCMAKE_INSTALL_PREFIX=install -DUSE_CUDA=gpu -DONNXRUNTIME_VERSION=1.16.3
 	cmake --build build --config Release
 	cd build && ctest --config Release
 	cmake --install build
