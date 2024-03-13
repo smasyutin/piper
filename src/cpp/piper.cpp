@@ -27,8 +27,8 @@ const std::string VERSION = "";
 #endif
 
 // Maximum value for 16-bit signed WAV sample
-// we decrease it by 7 to elimibate clipping
-const float MAX_WAV_VALUE = 32767.0f - 7;
+// we decrease it by 67 to elimibate clipping
+const float MAX_WAV_VALUE = 32767.0f - 67;
 
 const std::string instanceName{"piper"};
 
@@ -355,10 +355,33 @@ void loadVoice(PiperConfig &config, std::string modelPath,
 
 } /* loadVoice */
 
+void float_to_pcm32(const float* audio, int64_t audioCount, std::vector<float_t>& pcm32, float volume) {
+  std::transform(audio, audio + audioCount, std::back_inserter(pcm32),
+               [volume](float_t a32) { return a32 * volume; });
+}
+
+void pcm32_to_pcm16(std::vector<float_t> const& pcm32, std::vector<int16_t>& pcm16) {
+  // Get max audio value for scaling
+  float maxAudioValue = *std::max_element(pcm32.cbegin(), pcm32.cend(), [](float_t left, float_t right) {
+    return left < right;
+  });
+
+  pcm16.reserve(pcm32.size());
+
+  // Scale audio to fill range and convert to int16
+  float audioScale = MAX_WAV_VALUE / std::max(0.01f, maxAudioValue);
+  std::transform(pcm32.cbegin(), pcm32.cend(), std::back_inserter(pcm16),
+               [audioScale](float_t a32) { return static_cast<int16_t>(
+                 std::clamp(a32 * audioScale,
+                   static_cast<float>(std::numeric_limits<int16_t>::min()),
+                   static_cast<float>(std::numeric_limits<int16_t>::max()))); });
+}
+
 // Phoneme ids to WAV audio
 void synthesize(std::vector<PhonemeId> &phonemeIds,
                 SynthesisConfig &synthesisConfig, ModelSession &session,
-                std::vector<int16_t> &audioBuffer, SynthesisResult &result) {
+                SynthesisResult& result,
+                const std::function<void(std::vector<float_t> const&)>& synthesizeCallback) {
   spdlog::debug("Synthesizing audio for {} phoneme id(s)", phonemeIds.size());
 
   auto memoryInfo = Ort::MemoryInfo::CreateCpu(
@@ -429,28 +452,10 @@ void synthesize(std::vector<PhonemeId> &phonemeIds,
   spdlog::debug("Synthesized {} second(s) of audio in {} second(s)",
                 result.audioSeconds, result.inferSeconds);
 
-  // Get max audio value for scaling
-  float maxAudioValue = 0.01f;
-  for (int64_t i = 0; i < audioCount; i++) {
-    float audioValue = abs(audio[i]);
-    if (audioValue > maxAudioValue) {
-      maxAudioValue = audioValue;
-    }
-  }
+  std::vector<float_t> pcm32Audio;
+  float_to_pcm32(audio, audioCount, pcm32Audio, synthesisConfig.volume);
 
-  // We know the size up front
-  audioBuffer.reserve(audioCount);
-
-  // Scale audio to fill range and convert to int16
-  float audioScale = (synthesisConfig.volume * MAX_WAV_VALUE / std::max(0.01f, maxAudioValue));
-  for (int64_t i = 0; i < audioCount; i++) {
-    int16_t intAudioValue = static_cast<int16_t>(
-        std::clamp(audio[i] * audioScale,
-                   static_cast<float>(std::numeric_limits<int16_t>::min()),
-                   static_cast<float>(std::numeric_limits<int16_t>::max())));
-
-    audioBuffer.push_back(intAudioValue);
-  }
+  synthesizeCallback(pcm32Audio);
 
   // Clean up
   for (std::size_t i = 0; i < outputTensors.size(); i++) {
@@ -466,8 +471,8 @@ void synthesize(std::vector<PhonemeId> &phonemeIds,
 
 // Phonemize text and synthesize audio
 void textToAudio(PiperConfig &config, Voice &voice, std::string text,
-                 std::vector<int16_t> &audioBuffer, SynthesisResult &result,
-                 const std::function<void()> &audioCallback) {
+                 SynthesisResult& result,
+                 const std::function<void(std::vector<float_t> const&)>& audioCallback) {
 
   std::random_device silenceRandomDevice;
   std::mt19937 randomGen(silenceRandomDevice());
@@ -505,6 +510,7 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
   }
 
   // Synthesize each sentence independently.
+  std::vector<float_t> audioBuffer;
   std::vector<PhonemeId> phonemeIds;
   std::map<Phoneme, std::size_t> missingPhonemes;
   for (auto& sentencePhonemes : phonemes) {
@@ -598,18 +604,16 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
       }
 
       // ids -> audio
-      synthesize(phonemeIds, synthesisConfig, voice.session, audioBuffer,
-                 phraseResults[phraseIdx]);
+      synthesize(phonemeIds, synthesisConfig, voice.session, phraseResults[phraseIdx], audioCallback);
 
       // Add end of phrase silence
       for (std::size_t i = 0; i < phraseSilenceSamples[phraseIdx]; i++) {
         audioBuffer.push_back(0);
       }
 
-      // push all synthesised audio into stream
-      if (audioCallback) {
-        // Call back must copy audio since it is cleared afterwards.
-        audioCallback();
+      if (audioBuffer.size() > 0) {
+        // push all synthesised audio into stream
+        audioCallback(audioBuffer);
         audioBuffer.clear();
       }
 
@@ -628,10 +632,9 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
       audioBuffer.push_back(0);
     }
 
-    // push the rest of the audio into stream
-    if (audioCallback) {
-      // Call back must copy audio since it is cleared afterwards.
-      audioCallback();
+    if (audioBuffer.size() > 0) {
+      // push all synthesised audio into stream
+      audioCallback(audioBuffer);
       audioBuffer.clear();
     }
 
@@ -661,7 +664,9 @@ void textToWavFile(PiperConfig &config, Voice &voice, std::string text,
                    std::ostream &audioFile, SynthesisResult &result) {
 
   std::vector<int16_t> audioBuffer;
-  textToAudio(config, voice, text, audioBuffer, result, NULL);
+  textToAudio(config, voice, text, result, [&audioBuffer](std::vector<float_t> const& pcm32Audio) {
+    pcm32_to_pcm16(pcm32Audio, audioBuffer);
+  });
 
   // Write WAV
   auto synthesisConfig = voice.synthesisConfig;

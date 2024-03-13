@@ -93,10 +93,16 @@ struct RunConfig {
 
   // true to start as http server
   bool server = false;
+
+  // HTTP server address
+  std::string address = "0.0.0.0";
+
+  // HTTP server port
+  int port = 8080;
 };
 
 void parseArgs(int argc, char *argv[], RunConfig &runConfig);
-void rawOutputProc(vector<int16_t> &sharedAudioBuffer, mutex &mutAudio,
+void rawOutputProc(vector<float_t>& sharedAudioBuffer, mutex& mutAudio,
                    condition_variable &cvAudio, bool &audioReady,
                    bool &audioFinished);
 void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice);
@@ -255,12 +261,15 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
     json data = json::parse(req.body);
     std::string line = data["text"];
 
-    res.set_chunked_content_provider("audio/opus", [&, line](size_t offset, DataSink& sink) -> bool {
+    res.set_chunked_content_provider("audio/wav", [&, line](size_t offset, DataSink& sink) -> bool {
       piper::SynthesisResult result;
-      vector<int16_t> audioBuffer;
 
-      piper::textToAudio(piperConfig, voice, line, audioBuffer, result, [&audioBuffer, &sink]() {
-        // TODO encode opus
+      // WavHeader header = piper::getWavHeader(voice);
+      // sink.write((char*)(&header), sizeof(header));
+
+      piper::textToAudio(piperConfig, voice, line, result, [&sink](std::vector<float_t> const& pcm32Audio) {
+        vector<int16_t> audioBuffer;
+        piper::pcm32_to_pcm16(pcm32Audio, audioBuffer);
         sink.write((char*)(audioBuffer.data()), sizeof(int16_t) / sizeof(char) * audioBuffer.size());
       });
 
@@ -274,10 +283,8 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
     });
   });
 
-  auto address = "0.0.0.0";
-  auto port = 8080;
-  spdlog::info("Starting server http://{}:{}", address, port);
-  svr.listen(address, port);
+  spdlog::info("Starting server http://{}:{}", runConfig.address, runConfig.port);
+  svr.listen(runConfig.address, runConfig.port);
 }
 
 void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice) {
@@ -377,8 +384,7 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
       condition_variable cvAudio;
       bool audioReady = false;
       bool audioFinished = false;
-      vector<int16_t> audioBuffer;
-      vector<int16_t> sharedAudioBuffer;
+      vector<float_t> sharedAudioBuffer;
 
 #ifdef _WIN32
       // Needed on Windows to avoid terminal conversions
@@ -389,19 +395,17 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
       thread rawOutputThread(rawOutputProc, ref(sharedAudioBuffer),
         ref(mutAudio), ref(cvAudio), ref(audioReady),
         ref(audioFinished));
-      auto audioCallback = [&audioBuffer, &sharedAudioBuffer, &mutAudio,
-        &cvAudio, &audioReady]() {
+
+      piper::textToAudio(piperConfig, voice, line, result, [&sharedAudioBuffer, &mutAudio,
+        &cvAudio, &audioReady](std::vector<float_t> const& pcm32Audio) {
         // Signal thread that audio is ready
           {
             unique_lock lockAudio(mutAudio);
-            copy(audioBuffer.begin(), audioBuffer.end(),
-              back_inserter(sharedAudioBuffer));
+            copy(pcm32Audio.begin(), pcm32Audio.end(), back_inserter(sharedAudioBuffer));
             audioReady = true;
             cvAudio.notify_one();
           }
-        };
-      piper::textToAudio(piperConfig, voice, line, audioBuffer, result,
-        audioCallback);
+      });
 
       // Signal thread that there is no more audio
       {
@@ -426,7 +430,7 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
   } // for each line
 }
 
-void rawOutputProc(vector<int16_t>& sharedAudioBuffer, mutex& mutAudio,
+void rawOutputProc(vector<float_t>& sharedAudioBuffer, mutex& mutAudio,
                    condition_variable &cvAudio, bool &audioReady,
                    bool &audioFinished) {
   vector<int16_t> internalAudioBuffer;
@@ -439,8 +443,7 @@ void rawOutputProc(vector<int16_t>& sharedAudioBuffer, mutex& mutAudio,
         break;
       }
 
-      copy(sharedAudioBuffer.begin(), sharedAudioBuffer.end(),
-           back_inserter(internalAudioBuffer));
+      piper::pcm32_to_pcm16(sharedAudioBuffer, internalAudioBuffer);
 
       sharedAudioBuffer.clear();
 
@@ -499,6 +502,10 @@ void printUsage(char *argv[]) {
   cerr << "   --use-cuda                    use CUDA execution provider"
        << endl;
   cerr << "   --server                      start as HTTP server"
+    << endl;
+  cerr << "   --address                     start as HTTP server on address"
+    << endl;
+  cerr << "   --poer                        start as HTTP server on port"
     << endl;
   cerr << "   --debug                       print DEBUG messages to the console"
        << endl;
@@ -588,6 +595,12 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
     }
     else if (arg == "--server") {
       runConfig.server = true;
+    } else if (arg == "--address") {
+      ensureArg(argc, argv, i);
+      runConfig.address = std::string(argv[++i]);
+    } else if (arg == "--port") {
+      ensureArg(argc, argv, i);
+      runConfig.port = atoi(argv[++i]);
     } else if (arg == "--version") {
       std::cout << piper::getVersion() << std::endl;
       exit(0);

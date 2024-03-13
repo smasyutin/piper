@@ -127,8 +127,11 @@ void loadVoice(PiperConfig &config, std::string modelPath,
 
 // Phonemize text and synthesize audio
 void textToAudio(PiperConfig &config, Voice &voice, std::string text,
-                 std::vector<int16_t> &audioBuffer, SynthesisResult &result,
-                 const std::function<void()> &audioCallback);
+                 SynthesisResult& result,
+                 const std::function<void(std::vector<float_t> const&)>& audioCallback);
+
+// Convert from floating point 32-bit PCM as from the model to int PCM16
+void pcm32_to_pcm16(std::vector<float_t> const& pcm32, std::vector<int16_t>& pcm16);
 
 // Phonemize text and synthesize audio to WAV file
 void textToWavFile(PiperConfig &config, Voice &voice, std::string text,
