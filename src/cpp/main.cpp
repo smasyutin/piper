@@ -34,6 +34,7 @@
 #include "httplib.h"
 #include "json.hpp"
 #include "piper.hpp"
+#include "wavfile.hpp"
 
 using namespace std;
 using json = nlohmann::json;
@@ -105,6 +106,8 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig);
 void rawOutputProc(vector<float_t>& sharedAudioBuffer, mutex& mutAudio,
                    condition_variable &cvAudio, bool &audioReady,
                    bool &audioFinished);
+void textToWavFile(piper::PiperConfig& config, piper::Voice& voice, std::string text,
+                   std::ostream& audioFile, piper::SynthesisResult& result);
 void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice);
 void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice);
 
@@ -264,8 +267,9 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
     res.set_chunked_content_provider("audio/wav", [&, line](size_t offset, DataSink& sink) -> bool {
       piper::SynthesisResult result;
 
-      // WavHeader header = piper::getWavHeader(voice);
-      // sink.write((char*)(&header), sizeof(header));
+      WavHeader header;
+      fillWavHeader(header, voice.synthesisConfig.sampleRate, voice.synthesisConfig.sampleWidth, voice.synthesisConfig.channels, -1);
+      sink.write((char*)(&header), sizeof(header));
 
       piper::textToAudio(piperConfig, voice, line, result, [&sink](std::vector<float_t> const& pcm32Audio) {
         vector<int16_t> audioBuffer;
@@ -347,7 +351,7 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
 
       // Output audio to automatically-named WAV file in a directory
       ofstream audioFile(outputPath.string(), ios::binary);
-      piper::textToWavFile(piperConfig, voice, line, audioFile, result);
+      textToWavFile(piperConfig, voice, line, audioFile, result);
       cout << outputPath.string() << endl;
     }
     else if (outputType == OUTPUT_FILE) {
@@ -371,12 +375,12 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
 
       // Output audio to WAV file
       ofstream audioFile(outputPath.string(), ios::binary);
-      piper::textToWavFile(piperConfig, voice, line, audioFile, result);
+      textToWavFile(piperConfig, voice, line, audioFile, result);
       cout << outputPath.string() << endl;
     }
     else if (outputType == OUTPUT_STDOUT) {
       // Output WAV to stdout
-      piper::textToWavFile(piperConfig, voice, line, cout, result);
+      textToWavFile(piperConfig, voice, line, cout, result);
     }
     else if (outputType == OUTPUT_RAW) {
       // Raw output to stdout
@@ -459,6 +463,26 @@ void rawOutputProc(vector<float_t>& sharedAudioBuffer, mutex& mutAudio,
   }
 
 } // rawOutputProc
+
+// Phonemize text and synthesize audio to WAV file
+void textToWavFile(piper::PiperConfig& config, piper::Voice& voice, std::string text,
+                   std::ostream& audioFile, piper::SynthesisResult& result) {
+
+  std::vector<int16_t> audioBuffer;
+  textToAudio(config, voice, text, result, [&audioBuffer](std::vector<float_t> const& pcm32Audio) {
+    piper::pcm32_to_pcm16(pcm32Audio, audioBuffer);
+  });
+
+  // Write WAV
+  auto synthesisConfig = voice.synthesisConfig;
+  writeWavHeader(synthesisConfig.sampleRate, synthesisConfig.sampleWidth,
+                 synthesisConfig.channels, (int32_t)audioBuffer.size(),
+                 audioFile);
+
+  audioFile.write((const char*)audioBuffer.data(),
+                  sizeof(int16_t) * audioBuffer.size());
+
+} /* textToWavFile */
 
 // ----------------------------------------------------------------------------
 

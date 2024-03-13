@@ -23,16 +23,21 @@ struct WavHeader {
   uint32_t dataSize;
 };
 
-// Write WAV file header only
-void writeWavHeader(int sampleRate, int sampleWidth, int channels,
-                    uint32_t numSamples, std::ostream &audioFile) {
-  WavHeader header;
+void fillWavHeader(WavHeader& header, int sampleRate, int sampleWidth, int channels,
+                    uint32_t numSamples) {
   header.dataSize = numSamples * sampleWidth * channels;
   header.chunkSize = header.dataSize + sizeof(WavHeader) - 8;
   header.sampleRate = sampleRate;
   header.numChannels = channels;
   header.bytesPerSec = sampleRate * sampleWidth * channels;
   header.blockAlign = sampleWidth * channels;
+}
+
+// Write WAV file header only
+void writeWavHeader(int sampleRate, int sampleWidth, int channels,
+                    uint32_t numSamples, std::ostream& audioFile) {
+  WavHeader header;
+  fillWavHeader(header, sampleRate, sampleWidth, channels, numSamples);
   audioFile.write(reinterpret_cast<const char *>(&header), sizeof(header));
 
 } /* writeWavHeader */
