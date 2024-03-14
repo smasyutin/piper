@@ -239,8 +239,7 @@ int main(int argc, char *argv[]) {
 
   if (runConfig.server) {
     runServer(runConfig, piperConfig, voice);
-  }
-  else {
+  } else {
     runCommandLine(runConfig, piperConfig, voice);
   }
 
@@ -322,16 +321,14 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
         // Override speaker id
         voice.synthesisConfig.speakerId =
           lineRoot["speaker_id"].get<piper::SpeakerId>();
-      }
-      else if (lineRoot.contains("speaker")) {
+      } else if (lineRoot.contains("speaker")) {
         // Resolve to id using speaker id map
         auto speakerName = lineRoot["speaker"].get<std::string>();
         if ((voice.modelConfig.speakerIdMap) &&
           (voice.modelConfig.speakerIdMap->count(speakerName) > 0)) {
           voice.synthesisConfig.speakerId =
             (*voice.modelConfig.speakerIdMap)[speakerName];
-        }
-        else {
+        } else {
           spdlog::warn("No speaker named: {}", speakerName);
         }
       }
@@ -353,8 +350,7 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
       ofstream audioFile(outputPath.string(), ios::binary);
       textToWavFile(piperConfig, voice, line, audioFile, result);
       cout << outputPath.string() << endl;
-    }
-    else if (outputType == OUTPUT_FILE) {
+    } else if (outputType == OUTPUT_FILE) {
       if (!maybeOutputPath || maybeOutputPath->empty()) {
         throw runtime_error("No output path provided");
       }
@@ -377,12 +373,10 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
       ofstream audioFile(outputPath.string(), ios::binary);
       textToWavFile(piperConfig, voice, line, audioFile, result);
       cout << outputPath.string() << endl;
-    }
-    else if (outputType == OUTPUT_STDOUT) {
+    } else if (outputType == OUTPUT_STDOUT) {
       // Output WAV to stdout
       textToWavFile(piperConfig, voice, line, cout, result);
-    }
-    else if (outputType == OUTPUT_RAW) {
+    } else if (outputType == OUTPUT_RAW) {
       // Raw output to stdout
       mutex mutAudio;
       condition_variable cvAudio;
@@ -616,8 +610,7 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
       runConfig.jsonInput = true;
     } else if (arg == "--use_cuda") {
       runConfig.useCuda = true;
-    }
-    else if (arg == "--server") {
+    } else if (arg == "--server") {
       runConfig.server = true;
     } else if (arg == "--address") {
       ensureArg(argc, argv, i);
