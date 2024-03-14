@@ -519,11 +519,11 @@ void printUsage(char *argv[]) {
        << endl;
   cerr << "   --use-cuda                    use CUDA execution provider"
        << endl;
-  cerr << "   --server                      start as HTTP server"
+  cerr << "   --server                      (experimental) start as HTTP server"
     << endl;
-  cerr << "   --address                     start as HTTP server on address"
+  cerr << "   --address                     (experimental) start as HTTP server on address"
     << endl;
-  cerr << "   --poer                        start as HTTP server on port"
+  cerr << "   --port                        (experimental) start as HTTP server on port"
     << endl;
   cerr << "   --debug                       print DEBUG messages to the console"
        << endl;
