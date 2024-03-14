@@ -26,8 +26,7 @@ const std::string VERSION = "";
 #endif
 
 // Maximum value for 16-bit signed WAV sample
-// we decrease it by 67 to elimibate clipping
-const float MAX_WAV_VALUE = 32767.0f - 67;
+const int MAX_WAV_VALUE = 32767;
 
 const std::string instanceName{"piper"};
 
@@ -354,26 +353,30 @@ void loadVoice(PiperConfig &config, std::string modelPath,
 
 } /* loadVoice */
 
-void float_to_pcm32(const float* audio, int64_t audioCount, std::vector<float_t>& pcm32, float volume) {
-  std::transform(audio, audio + audioCount, std::back_inserter(pcm32),
-               [volume](float_t a32) { return a32 * volume; });
-}
-
-void pcm32_to_pcm16(std::vector<float_t> const& pcm32, std::vector<int16_t>& pcm16) {
-  // Get max audio value for scaling
-  float maxAudioValue = *std::max_element(pcm32.cbegin(), pcm32.cend(), [](float_t left, float_t right) {
+void float_to_pcm32(std::vector<float_t>& pcm32, float volume) {
+  float valueHigh = *std::max_element(pcm32.cbegin(), pcm32.cend(), [](float_t left, float_t right) {
     return left < right;
   });
 
+  float valueLow = *std::max_element(pcm32.cbegin(), pcm32.cend(), [](float_t left, float_t right) {
+    return left > right;
+  });
+
+  // scale to [-1, 1]
+  float scale = std::max(abs(valueHigh), abs(valueLow));
+  std::transform(pcm32.cbegin(), pcm32.cend(), pcm32.begin(),
+               [&volume, &scale](float_t a32) { return a32 * volume / scale; });
+}
+
+void pcm32_to_pcm16(std::vector<float_t> const& pcm32, std::vector<int16_t>& pcm16) {
   pcm16.reserve(pcm32.size());
+  if (pcm32.size() == 0) {
+    return;
+  }
 
   // Scale audio to fill range and convert to int16
-  float audioScale = MAX_WAV_VALUE / std::max(0.01f, maxAudioValue);
   std::transform(pcm32.cbegin(), pcm32.cend(), std::back_inserter(pcm16),
-               [audioScale](float_t a32) { return static_cast<int16_t>(
-                 std::clamp(a32 * audioScale,
-                   static_cast<float>(std::numeric_limits<int16_t>::min()),
-                   static_cast<float>(std::numeric_limits<int16_t>::max()))); });
+               [](float_t a32) { return static_cast<int16_t>(a32 * MAX_WAV_VALUE); });
 }
 
 // Phoneme ids to WAV audio
@@ -451,8 +454,9 @@ void synthesize(std::vector<PhonemeId> &phonemeIds,
   spdlog::debug("Synthesized {} second(s) of audio in {} second(s)",
                 result.audioSeconds, result.inferSeconds);
 
-  std::vector<float_t> pcm32Audio;
-  float_to_pcm32(audio, audioCount, pcm32Audio, synthesisConfig.volume);
+  std::vector<float_t> pcm32Audio(audio, audio + audioCount);
+  // we receive audio samples in [-1, 1] range
+  float_to_pcm32(pcm32Audio, synthesisConfig.volume);
 
   synthesizeCallback(pcm32Audio);
 
@@ -610,11 +614,9 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
         audioBuffer.push_back(0);
       }
 
-      if (audioBuffer.size() > 0) {
-        // push all synthesised audio into stream
-        audioCallback(audioBuffer);
-        audioBuffer.clear();
-      }
+      // push all synthesised audio into stream
+      audioCallback(audioBuffer);
+      audioBuffer.clear();
 
       result.audioSeconds += phraseResults[phraseIdx].audioSeconds;
       result.inferSeconds += phraseResults[phraseIdx].inferSeconds;
@@ -623,19 +625,17 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
     }
 
     // Add sentence silence
-    std::size_t sentencePauseDuration = 1000 * voice.synthesisConfig.sentenceSilenceSeconds * synthesisConfig.lengthScale;
+    std::size_t sentencePauseDuration = 1000 * synthesisConfig.sentenceSilenceSeconds * synthesisConfig.lengthScale;
     spdlog::debug("sentencePauseDuration: {}ms", sentencePauseDuration);
 
-    std::size_t sentenceSilenceSamples = sentencePauseDuration * (voice.synthesisConfig.sampleRate / 1000 * voice.synthesisConfig.channels);
+    std::size_t sentenceSilenceSamples = sentencePauseDuration * (synthesisConfig.sampleRate / 1000 * synthesisConfig.channels);
     for (std::size_t i = 0; i < sentenceSilenceSamples; i++) {
       audioBuffer.push_back(0);
     }
 
-    if (audioBuffer.size() > 0) {
-      // push all synthesised audio into stream
-      audioCallback(audioBuffer);
-      audioBuffer.clear();
-    }
+    // push all synthesised audio into stream
+    audioCallback(audioBuffer);
+    audioBuffer.clear();
 
     phonemeIds.clear();
   }
