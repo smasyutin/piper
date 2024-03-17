@@ -38,7 +38,7 @@ int main(int argc, char *argv[]) {
   optional<piper::SpeakerId> speakerId;
   loadVoice(piperConfig, modelPath, modelPath + ".json", voice, speakerId,
             false);
-  piper::initialize(piperConfig);
+  piper::initialize(piperConfig, voice);
 
   piper::SynthesisResult result;
 

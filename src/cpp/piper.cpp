@@ -26,7 +26,7 @@ const std::string VERSION = "";
 #endif
 
 // Maximum value for 16-bit signed WAV sample
-const int MAX_WAV_VALUE = 32767;
+const int MAX_WAV_VALUE = 32765;
 
 const std::string instanceName{"piper"};
 
@@ -233,12 +233,12 @@ void parseModelConfig(json &configRoot, ModelConfig &modelConfig) {
 
 } /* parseModelConfig */
 
-void initialize(PiperConfig &config) {
+void initialize(PiperConfig& config, Voice& voice) {
   if (config.useESpeak) {
-    // Set up espeak-ng for calling espeak_TextToPhonemesWithTerminator
+    // Set up espeak-ng and its voice for calling espeak_TextToPhonemesWithTerminator
     // See: https://github.com/rhasspy/espeak-ng
     spdlog::debug("Initializing eSpeak");
-    int result = espeak_Initialize(AUDIO_OUTPUT_SYNCHRONOUS,
+    int result = espeak_Initialize(AUDIO_OUTPUT_RETRIEVAL,
                                    /*buflength*/ 0,
                                    /*path*/ config.eSpeakDataPath.c_str(),
                                    /*options*/ 0);
@@ -247,6 +247,13 @@ void initialize(PiperConfig &config) {
     }
 
     spdlog::debug("Initialized eSpeak");
+
+    spdlog::debug("Initializing eSpeak Voice");
+    result = espeak_SetVoiceByName(voice.phonemizeConfig.eSpeak.voice.c_str());
+    if (result != 0) {
+      throw std::runtime_error("Failed to set eSpeak-ng voice");
+    }
+    spdlog::debug("Initialized eSpeak Voice");
   }
 
   // Load onnx model for libtashkeel
@@ -505,7 +512,9 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
     // Use espeak-ng for phonemization
     eSpeakPhonemeConfig eSpeakConfig;
     eSpeakConfig.voice = voice.phonemizeConfig.eSpeak.voice;
-    phonemize_eSpeak(text, eSpeakConfig, phonemes);
+
+    // the voice is already loaded in `initialize`, so we use `_loadedVoice` version here
+    phonemize_eSpeak_loadedVoice(text, eSpeakConfig, phonemes);
   } else {
     // Use UTF-8 codepoints as "phonemes"
     CodepointsPhonemeConfig codepointsConfig;

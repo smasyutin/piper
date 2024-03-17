@@ -115,7 +115,7 @@ Phoneme getCodepoint(std::string s);
 std::string getVersion();
 
 // Must be called before using textTo* functions
-void initialize(PiperConfig &config);
+void initialize(PiperConfig &config, Voice &voice);
 
 // Clean up
 void terminate(PiperConfig &config);

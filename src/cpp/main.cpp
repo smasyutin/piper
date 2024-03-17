@@ -201,7 +201,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  piper::initialize(piperConfig);
+  piper::initialize(piperConfig, voice);
 
   // Scales
   if (runConfig.noiseScale) {
@@ -255,6 +255,26 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
 
   Server svr;
 
+  // FIXME make it work
+  // svr.new_task_queue = [] { return new ThreadPool(
+  //   /*num_threads=*/CPPHTTPLIB_THREAD_POOL_COUNT,
+  //   /*max_queued_requests=*/36);
+  // };
+
+  svr.set_exception_handler([](const Request& req, Response& res, std::exception_ptr ep) {
+    res.status = StatusCode::InternalServerError_500;
+    try {
+      std::rethrow_exception(ep);
+    } catch (std::exception& e) {
+      spdlog::error("unhandled {} -> {}\n{}", req.body, res.status, e.what());
+    } catch (...) {
+      // if you don't provide the catch (...) block for a rethrown exception pointer, 
+      // an uncaught exception will end up causing the server crash.
+      // Be careful!
+      spdlog::error("unhandled {} -> {}\n{}", req.body, res.status, "Unknown Exception");
+    }
+  });
+
   svr.set_logger([](const Request& req, const Response& res) {
     spdlog::debug("handled {} -> {}", req.body, res.status);
   });
@@ -288,6 +308,7 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
 
   spdlog::info("Starting server http://{}:{}", runConfig.address, runConfig.port);
   svr.listen(runConfig.address, runConfig.port);
+
 }
 
 void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice) {
