@@ -621,15 +621,15 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
 
       auto phoneme = piper::getCodepoint(phonemeStr);
       (*runConfig.phonemeSilenceSeconds)[phoneme] = stof(argv[++i]);
-    } else if (arg == "--espeak_data") {
+    } else if (arg == "--espeak_data" || arg == "--espeak-data") {
       ensureArg(argc, argv, i);
       runConfig.eSpeakDataPath = filesystem::path(argv[++i]);
-    } else if (arg == "--tashkeel_model") {
+    } else if (arg == "--tashkeel_model" || arg == "--tashkeel-model") {
       ensureArg(argc, argv, i);
       runConfig.tashkeelModelPath = filesystem::path(argv[++i]);
-    } else if (arg == "--json_input") {
+    } else if (arg == "--json_input" || arg == "--json-input") {
       runConfig.jsonInput = true;
-    } else if (arg == "--use_cuda") {
+    } else if (arg == "--use_cuda" || arg == "--use-cuda") {
       runConfig.useCuda = true;
     } else if (arg == "--server") {
       runConfig.server = true;
