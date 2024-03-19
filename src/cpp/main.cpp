@@ -285,6 +285,7 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
 
     res.set_chunked_content_provider("audio/wav", [&, line](size_t offset, DataSink& sink) -> bool {
       piper::SynthesisResult result;
+      result.startTime = std::chrono::steady_clock::now();
 
       WavHeader header;
       fillWavHeader(header, voice.synthesisConfig.sampleRate, voice.synthesisConfig.sampleWidth, voice.synthesisConfig.channels, -1);
@@ -298,9 +299,14 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
 
       sink.done();
 
-      spdlog::info("Real-time factor: {} (infer={} sec, audio={} sec)",
-        result.realTimeFactor, result.inferSeconds,
-        result.audioSeconds);
+      auto endTime = std::chrono::steady_clock::now();
+      auto durationSeconds = std::chrono::duration<double>(endTime - result.startTime).count();
+      spdlog::info("Real-time factor: {} (audio={} sec, infer={} sec, total={} sec)",
+        durationSeconds / result.audioSeconds,
+        result.audioSeconds,
+        result.inferSeconds,
+        durationSeconds
+      );
 
       return true;
     });
@@ -308,7 +314,6 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
 
   spdlog::info("Starting server http://{}:{}", runConfig.address, runConfig.port);
   svr.listen(runConfig.address, runConfig.port);
-
 }
 
 void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice) {
@@ -319,6 +324,7 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
 
   string line;
   piper::SynthesisResult result;
+  result.startTime = std::chrono::steady_clock::now();
   while (getline(cin, line)) {
     auto outputType = runConfig.outputType;
     auto speakerId = voice.synthesisConfig.speakerId;
@@ -439,9 +445,14 @@ void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper
       rawOutputThread.join();
     }
 
-    spdlog::info("Real-time factor: {} (infer={} sec, audio={} sec)",
-      result.realTimeFactor, result.inferSeconds,
-      result.audioSeconds);
+    auto endTime = std::chrono::steady_clock::now();
+    auto durationSeconds = std::chrono::duration<double>(endTime - result.startTime).count();
+    spdlog::info("Real-time factor: {} (audio={} sec, infer={} sec, total={} sec)",
+      durationSeconds / result.audioSeconds,
+      result.audioSeconds,
+      result.inferSeconds,
+      durationSeconds
+    );
 
     // Restore config (--json-input)
     voice.synthesisConfig.speakerId = speakerId;

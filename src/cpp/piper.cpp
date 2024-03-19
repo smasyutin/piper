@@ -302,12 +302,8 @@ void loadModel(std::string modelPath, ModelSession &session, bool useCuda) {
   // Slows down performance by ~2x
   // session.options.SetIntraOpNumThreads(1);
 
-  // Roughly doubles load time for no visible inference benefit
-  // session.options.SetGraphOptimizationLevel(
-  //     GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-
-  session.options.SetGraphOptimizationLevel(
-      GraphOptimizationLevel::ORT_DISABLE_ALL);
+  // Slightly improves inference speed
+  session.options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
   // Slows down performance very slightly
   // session.options.SetExecutionMode(ExecutionMode::ORT_PARALLEL);
@@ -454,10 +450,6 @@ void synthesize(std::vector<PhonemeId> &phonemeIds,
   int64_t audioCount = audioShape[audioShape.size() - 1];
 
   result.audioSeconds = (double)audioCount / (double)synthesisConfig.sampleRate;
-  result.realTimeFactor = 0.0;
-  if (result.audioSeconds > 0) {
-    result.realTimeFactor = result.inferSeconds / result.audioSeconds;
-  }
   spdlog::debug("Synthesized {} second(s) of audio in {} second(s)",
                 result.audioSeconds, result.inferSeconds);
 
@@ -466,15 +458,6 @@ void synthesize(std::vector<PhonemeId> &phonemeIds,
   float_to_pcm32(pcm32Audio, synthesisConfig.volume);
 
   synthesizeCallback(pcm32Audio);
-
-  // Clean up
-  for (std::size_t i = 0; i < outputTensors.size(); i++) {
-    Ort::detail::OrtRelease(outputTensors[i].release());
-  }
-
-  for (std::size_t i = 0; i < inputTensors.size(); i++) {
-    Ort::detail::OrtRelease(inputTensors[i].release());
-  }
 }
 
 // ----------------------------------------------------------------------------
@@ -660,11 +643,6 @@ void textToAudio(PiperConfig &config, Voice &voice, std::string text,
                    (uint32_t)phonemeCount.first, phonemeCount.second);
     }
   }
-
-  if (result.audioSeconds > 0) {
-    result.realTimeFactor = result.inferSeconds / result.audioSeconds;
-  }
-
 } /* textToAudio */
 
 } // namespace piper

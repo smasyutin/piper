@@ -1,6 +1,7 @@
 #ifndef PIPER_H_
 #define PIPER_H_
 
+#include <chrono>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -92,9 +93,9 @@ struct ModelSession {
 };
 
 struct SynthesisResult {
+  std::chrono::steady_clock::time_point startTime;
   double inferSeconds;
   double audioSeconds;
-  double realTimeFactor;
 };
 
 struct Voice {
