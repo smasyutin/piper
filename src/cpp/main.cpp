@@ -33,6 +33,7 @@
 #define CPPHTTPLIB_USE_POLL
 #include "httplib.h"
 #include "json.hpp"
+#include "opusenc.h"
 #include "piper.hpp"
 #include "wavfile.hpp"
 
@@ -250,6 +251,43 @@ int main(int argc, char *argv[]) {
 
 // ----------------------------------------------------------------------------
 
+// /** Called for writing a page.
+//  \param user_data user-defined data passed to the callback
+//  \param ptr       buffer to be written
+//  \param len       number of bytes to be written
+//  \return          error code
+//  \retval 0        success
+//  \retval 1        failure
+//  */
+// typedef int (*ope_write_func)(void* user_data, const unsigned char* ptr, opus_int32 len);
+static int data_sink_write(void* user_data, const unsigned char* ptr, opus_int32 len) {
+  using namespace httplib;
+
+  DataSink* sink = (DataSink*)user_data;
+  sink->write((char*)ptr, (size_t)len);
+  return 0;
+}
+
+// /** Called for closing a stream.
+//  \param user_data user-defined data passed to the callback
+//  \return          error code
+//  \retval 0        success
+//  \retval 1        failure
+//  */
+// typedef int (*ope_close_func)(void* user_data);
+static int data_sink_close(void* user_data) {
+  using namespace httplib;
+
+  DataSink* sink = (DataSink*)user_data;
+  sink->done();
+  return 0;
+}
+
+static const OpusEncCallbacks data_sink_callbacks = {
+  data_sink_write,
+  data_sink_close
+};
+
 void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice) {
   using namespace httplib;
 
@@ -298,6 +336,46 @@ void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voi
       });
 
       sink.done();
+
+      auto endTime = std::chrono::steady_clock::now();
+      auto durationSeconds = std::chrono::duration<double>(endTime - result.startTime).count();
+      spdlog::info("Real-time factor: {} (audio={} sec, infer={} sec, total={} sec)",
+        durationSeconds / result.audioSeconds,
+        result.audioSeconds,
+        result.inferSeconds,
+        durationSeconds
+      );
+
+      return true;
+    });
+  });
+
+  svr.Post("/ttso", [&piperConfig, &voice](const Request& req, Response& res) {
+    json data = json::parse(req.body);
+    std::string line = data["text"];
+
+    res.set_chunked_content_provider("audio/opus", [&, line](size_t offset, DataSink& sink) -> bool {
+      piper::SynthesisResult result;
+      result.startTime = std::chrono::steady_clock::now();
+
+      OggOpusComments* comments = ope_comments_create();
+      OggOpusEnc* enc = ope_encoder_create_callbacks(&data_sink_callbacks, &sink,
+        comments, voice.synthesisConfig.sampleRate, voice.synthesisConfig.channels,
+        0, nullptr
+      );
+
+      if (enc == nullptr) {
+        ope_comments_destroy(comments);
+        return false;
+      }
+
+      piper::textToAudio(piperConfig, voice, line, result, [enc, &voice](std::vector<float_t> const& pcm32Audio) {
+        ope_encoder_write_float(enc, pcm32Audio.data(), pcm32Audio.size() / voice.synthesisConfig.channels);
+      });
+
+      ope_encoder_drain(enc);
+      ope_encoder_destroy(enc);
+      ope_comments_destroy(comments);
 
       auto endTime = std::chrono::steady_clock::now();
       auto durationSeconds = std::chrono::duration<double>(endTime - result.startTime).count();

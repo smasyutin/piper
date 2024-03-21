@@ -356,17 +356,12 @@ void loadVoice(PiperConfig &config, std::string modelPath,
 
 } /* loadVoice */
 
-void float_to_pcm32(std::vector<float_t>& pcm32, float volume) {
-  float valueHigh = *std::max_element(pcm32.cbegin(), pcm32.cend(), [](float_t left, float_t right) {
-    return left < right;
-  });
-
-  float valueLow = *std::max_element(pcm32.cbegin(), pcm32.cend(), [](float_t left, float_t right) {
-    return left > right;
+void float_to_pcm32(std::vector<float_t>& pcm32, const float volume) {
+  const float scale = *std::max_element(pcm32.cbegin(), pcm32.cend(), [](float_t left, float_t right) {
+    return abs(left) < abs(right);
   });
 
   // scale to [-1, 1]
-  float scale = std::max(abs(valueHigh), abs(valueLow));
   std::transform(pcm32.cbegin(), pcm32.cend(), pcm32.begin(),
                [&volume, &scale](float_t a32) { return a32 * volume / scale; });
 }

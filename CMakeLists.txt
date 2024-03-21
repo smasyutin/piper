@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
 
 project(piper C CXX)
+include(ExternalProject)
 
 file(READ "${CMAKE_CURRENT_LIST_DIR}/VERSION" piper_version)
 
@@ -24,28 +25,24 @@ add_executable(test_piper src/cpp/test.cpp src/cpp/piper.cpp)
 # NOTE: onnxruntime is pulled from piper-phonemize
 
 # ---- fmt ---
-
 if(NOT DEFINED FMT_DIR)
-  set(FMT_VERSION "10.0.0")
+  set(FMT_VERSION "10.2.1")
   set(FMT_DIR "${CMAKE_CURRENT_BINARY_DIR}/fi")
-
-  include(ExternalProject)
   ExternalProject_Add(
     fmt_external
     PREFIX "${CMAKE_CURRENT_BINARY_DIR}/f"
     URL "https://github.com/fmtlib/fmt/archive/refs/tags/${FMT_VERSION}.zip"
     CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${FMT_DIR}
-    CMAKE_ARGS -DFMT_TEST:BOOL=OFF  # Don't build all the tests
+    CMAKE_ARGS -DFMT_TEST:BOOL=OFF # Don't build all the tests
   )
   add_dependencies(piper fmt_external)
   add_dependencies(test_piper fmt_external)
 endif()
 
 # ---- spdlog ---
-
 if(NOT DEFINED SPDLOG_DIR)
   set(SPDLOG_DIR "${CMAKE_CURRENT_BINARY_DIR}/si")
-  set(SPDLOG_VERSION "1.12.0")
+  set(SPDLOG_VERSION "1.13.0")
   ExternalProject_Add(
     spdlog_external
     PREFIX "${CMAKE_CURRENT_BINARY_DIR}/s"
@@ -56,8 +53,43 @@ if(NOT DEFINED SPDLOG_DIR)
   add_dependencies(test_piper spdlog_external)
 endif()
 
-# ---- piper-phonemize ---
+# ---- libopus ---
+set(LIBOPUS_VERSION "1.4")
+find_library(LIBOPUS NAMES opus)
 
+if(NOT DEFINED LIBOPUS_SRC_DIR)
+  set(LIBOPUS_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/op")
+  set(LIBOPUS_FILE "libopus-v${LIBOPUS_VERSION}.zip")
+
+  if(NOT EXISTS "download/${LIBOPUS_FILE}")
+    set(LIBOPUS_URL "https://github.com/xiph/opus/archive/refs/tags/v${LIBOPUS_VERSION}.zip")
+    message("Downloading ${LIBOPUS_URL}")
+    file(DOWNLOAD "${LIBOPUS_URL}" "download/${LIBOPUS_FILE}")
+  endif()
+
+  file(ARCHIVE_EXTRACT INPUT "download/${LIBOPUS_FILE}" DESTINATION "${LIBOPUS_SRC_DIR}")
+  set(LIBOPUS_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/op/opus-${LIBOPUS_VERSION}")
+endif()
+
+# ---- libopusenc ---
+set(LIBOPUSENC_VERSION "0.2.1")
+find_library(LIBOPUSENC NAMES opusenc)
+
+if(NOT DEFINED LIBOPUSENC_SRC_DIR)
+  set(LIBOPUSENC_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/opes")
+  set(LIBOPUSENC_FILE "libopusenc-v${LIBOPUSENC_VERSION}.zip")
+
+  if(NOT EXISTS "download/${LIBOPUSENC_FILE}")
+    set(LIBOPUSENC_URL "https://github.com/xiph/libopusenc/archive/refs/tags/v${LIBOPUSENC_VERSION}.zip")
+    message("Downloading ${LIBOPUSENC_URL}")
+    file(DOWNLOAD "${LIBOPUSENC_URL}" "download/${LIBOPUSENC_FILE}")
+  endif()
+
+  file(ARCHIVE_EXTRACT INPUT "download/${LIBOPUSENC_FILE}" DESTINATION "${LIBOPUSENC_SRC_DIR}")
+  set(LIBOPUSENC_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/opes/libopusenc-${LIBOPUSENC_VERSION}")
+endif()
+
+# ---- piper-phonemize ---
 set(PIPER_PHONEMIZE_DIR "${CMAKE_CURRENT_BINARY_DIR}/pi")
 
 if(DEFINED PIPER_PHONEMIZE_SRC_DIR)
@@ -80,8 +112,7 @@ add_dependencies(piper piper_phonemize_external)
 add_dependencies(test_piper piper_phonemize_external)
 
 # ---- Declare executable ----
-
-if((NOT MSVC) AND (NOT APPLE))
+if((NOT MSVC) AND(NOT APPLE))
   # Linux flags
   string(APPEND CMAKE_CXX_FLAGS " -Wall -Wextra -Wl,-rpath,'$ORIGIN'")
   string(APPEND CMAKE_C_FLAGS " -Wall -Wextra")
@@ -96,6 +127,8 @@ target_link_libraries(piper
   espeak-ng
   piper_phonemize
   onnxruntime
+  ${LIBOPUS}
+  ${LIBOPUSENC}
   ${PIPER_EXTRA_LIBRARIES}
 )
 
@@ -109,6 +142,8 @@ target_include_directories(piper PUBLIC
   ${FMT_DIR}/include
   ${SPDLOG_DIR}/include
   ${PIPER_PHONEMIZE_DIR}/include
+  ${LIBOPUS_SRC_DIR}/include
+  ${LIBOPUSENC_SRC_DIR}/include
 )
 
 target_compile_definitions(piper PUBLIC _PIPER_VERSION=${piper_version})
@@ -128,6 +163,7 @@ target_include_directories(
   ${FMT_DIR}/include
   ${SPDLOG_DIR}/include
   ${PIPER_PHONEMIZE_DIR}/include
+  ${LIBOPUSENC_DIR}/include
 )
 
 target_link_directories(
@@ -146,7 +182,6 @@ target_link_libraries(test_piper PUBLIC
 )
 
 # ---- Declare install targets ----
-
 install(
   TARGETS piper
   DESTINATION ${CMAKE_INSTALL_PREFIX})
@@ -155,7 +190,7 @@ install(
 install(
   DIRECTORY ${PIPER_PHONEMIZE_DIR}/bin/
   DESTINATION ${CMAKE_INSTALL_PREFIX}
-  USE_SOURCE_PERMISSIONS  # keep +x
+  USE_SOURCE_PERMISSIONS # keep +x
   FILES_MATCHING
   PATTERN "piper_phonemize"
   PATTERN "espeak-ng"
