@@ -288,7 +288,7 @@ void terminate(PiperConfig &config) {
 
 void loadModel(std::string modelPath, ModelSession &session, bool useCuda) {
   spdlog::debug("Loading onnx model from {}", modelPath);
-  session.env = Ort::Env(OrtLoggingLevel::ORT_LOGGING_LEVEL_WARNING,
+  session.env = Ort::Env(OrtLoggingLevel::ORT_LOGGING_LEVEL_ERROR,
                          instanceName.c_str());
   session.env.DisableTelemetryEvents();
 
@@ -299,17 +299,9 @@ void loadModel(std::string modelPath, ModelSession &session, bool useCuda) {
     session.options.AppendExecutionProvider_CUDA(cuda_options);
   }
 
-  // Slows down performance by ~2x
-  // session.options.SetIntraOpNumThreads(1);
-
   // Slightly improves inference speed
   session.options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
-  // Slows down performance very slightly
-  // session.options.SetExecutionMode(ExecutionMode::ORT_PARALLEL);
-
-  session.options.DisableCpuMemArena();
-  session.options.DisableMemPattern();
   session.options.DisableProfiling();
 
   auto startTime = std::chrono::steady_clock::now();
@@ -377,7 +369,7 @@ void pcm32_to_pcm16(std::vector<float_t> const& pcm32, std::vector<int16_t>& pcm
                [](float_t a32) { return static_cast<int16_t>(a32 * MAX_WAV_VALUE); });
 }
 
-// Phoneme ids to WAV audio
+// Phoneme ids to RAW audio
 void synthesize(std::vector<PhonemeId> &phonemeIds,
                 SynthesisConfig &synthesisConfig, ModelSession &session,
                 SynthesisResult& result,
