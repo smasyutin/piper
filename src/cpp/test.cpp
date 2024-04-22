@@ -38,19 +38,20 @@ int main(int argc, char *argv[]) {
   optional<piper::SpeakerId> speakerId;
   loadVoice(piperConfig, modelPath, modelPath + ".json", voice, speakerId,
             false);
-  piper::initialize(piperConfig);
-
-  // Output audio to WAV file
-  ofstream audioFile(outputPath, ios::binary);
+  piper::initialize(piperConfig, voice);
 
   piper::SynthesisResult result;
-  piper::textToWavFile(piperConfig, voice, "This is a test.", audioFile,
-                       result);
+
+  std::vector<float_t> audioBuffer;
+  piper::textToAudio(piperConfig, voice, "This is a test.", result, [&audioBuffer](std::vector<float_t> const& pcm32Audio) {
+    std::copy(pcm32Audio.cbegin(), pcm32Audio.cend(), std::back_inserter(audioBuffer));
+  });
+
   piper::terminate(piperConfig);
 
   // Verify that file has some data
-  if (audioFile.tellp() < 10000) {
-    std::cerr << "ERROR: Output file is smaller than expected!" << std::endl;
+  if (audioBuffer.size() < 10000) {
+    std::cerr << "ERROR: Output is smaller than expected!" << std::endl;
     return EXIT_FAILURE;
   }
 

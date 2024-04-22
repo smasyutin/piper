@@ -1,6 +1,7 @@
 #ifndef PIPER_H_
 #define PIPER_H_
 
+#include <chrono>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -92,9 +93,9 @@ struct ModelSession {
 };
 
 struct SynthesisResult {
+  std::chrono::steady_clock::time_point startTime;
   double inferSeconds;
   double audioSeconds;
-  double realTimeFactor;
 };
 
 struct Voice {
@@ -115,7 +116,7 @@ Phoneme getCodepoint(std::string s);
 std::string getVersion();
 
 // Must be called before using textTo* functions
-void initialize(PiperConfig &config);
+void initialize(PiperConfig &config, Voice &voice);
 
 // Clean up
 void terminate(PiperConfig &config);
@@ -127,12 +128,11 @@ void loadVoice(PiperConfig &config, std::string modelPath,
 
 // Phonemize text and synthesize audio
 void textToAudio(PiperConfig &config, Voice &voice, std::string text,
-                 std::vector<int16_t> &audioBuffer, SynthesisResult &result,
-                 const std::function<void()> &audioCallback);
+                 SynthesisResult& result,
+                 const std::function<void(std::vector<float_t> const&)>& audioCallback);
 
-// Phonemize text and synthesize audio to WAV file
-void textToWavFile(PiperConfig &config, Voice &voice, std::string text,
-                   std::ostream &audioFile, SynthesisResult &result);
+// Convert from floating point 32-bit PCM as from the model to int PCM16
+void pcm32_to_pcm16(std::vector<float_t> const& pcm32, std::vector<int16_t>& pcm16);
 
 } // namespace piper
 

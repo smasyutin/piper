@@ -30,13 +30,21 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#define CPPHTTPLIB_USE_POLL
+#define CPPHTTPLIB_TCP_NODELAY true
+#define CPPHTTPLIB_HEADER_MAX_LENGTH 127
+#define CPPHTTPLIB_REQUEST_URI_MAX_LENGTH 127
+#include "httplib.h"
 #include "json.hpp"
+#include "opusenc.h"
 #include "piper.hpp"
+#include "wavfile.hpp"
 
 using namespace std;
 using json = nlohmann::json;
 
 enum OutputType { OUTPUT_FILE, OUTPUT_DIRECTORY, OUTPUT_STDOUT, OUTPUT_RAW };
+enum OutputFormat { FORMAT_RAW, FORMAT_WAV, FORMAT_OPUS };
 
 struct RunConfig {
   // Path to .onnx voice file
@@ -46,8 +54,12 @@ struct RunConfig {
   filesystem::path modelConfigPath;
 
   // Type of output to produce.
-  // Default is to write a WAV file in the current directory.
+  // Default is to write in the current directory.
   OutputType outputType = OUTPUT_DIRECTORY;
+
+  // Type of output format to produce.
+  // Default is a WAV file
+  OutputFormat outputFormat = FORMAT_WAV;
 
   // Path for output
   optional<filesystem::path> outputPath = filesystem::path(".");
@@ -88,12 +100,25 @@ struct RunConfig {
 
   // true to use CUDA execution provider
   bool useCuda = false;
+
+  // true to start as http server
+  bool server = false;
+
+  // HTTP server address
+  std::string address = "0.0.0.0";
+
+  // HTTP server port
+  int port = 8080;
 };
 
 void parseArgs(int argc, char *argv[], RunConfig &runConfig);
-void rawOutputProc(vector<int16_t> &sharedAudioBuffer, mutex &mutAudio,
+void rawOutputProc(vector<float_t>& sharedAudioBuffer, mutex& mutAudio,
                    condition_variable &cvAudio, bool &audioReady,
                    bool &audioFinished);
+void textToWavFile(piper::PiperConfig& config, piper::Voice& voice, std::string text,
+                   std::ostream& audioFile, piper::SynthesisResult& result);
+void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice);
+void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice);
 
 // ----------------------------------------------------------------------------
 
@@ -185,7 +210,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  piper::initialize(piperConfig);
+  piper::initialize(piperConfig, voice);
 
   // Scales
   if (runConfig.noiseScale) {
@@ -221,6 +246,154 @@ int main(int argc, char *argv[]) {
 
   } // if phonemeSilenceSeconds
 
+  if (runConfig.server) {
+    runServer(runConfig, piperConfig, voice);
+  } else {
+    runCommandLine(runConfig, piperConfig, voice);
+  }
+
+  piper::terminate(piperConfig);
+
+  return EXIT_SUCCESS;
+}
+
+// ----------------------------------------------------------------------------
+
+// /** Called for writing a page.
+//  \param user_data user-defined data passed to the callback
+//  \param ptr       buffer to be written
+//  \param len       number of bytes to be written
+//  \return          error code
+//  \retval 0        success
+//  \retval 1        failure
+//  */
+// typedef int (*ope_write_func)(void* user_data, const unsigned char* ptr, opus_int32 len);
+static int data_sink_write(void* user_data, const unsigned char* ptr, opus_int32 len) {
+  using namespace httplib;
+
+  DataSink* sink = (DataSink*)user_data;
+  sink->write((char*)ptr, (size_t)len);
+  return 0;
+}
+
+// /** Called for closing a stream.
+//  \param user_data user-defined data passed to the callback
+//  \return          error code
+//  \retval 0        success
+//  \retval 1        failure
+//  */
+// typedef int (*ope_close_func)(void* user_data);
+static int data_sink_close(void* user_data) {
+  using namespace httplib;
+
+  DataSink* sink = (DataSink*)user_data;
+  sink->done();
+  return 0;
+}
+
+static const OpusEncCallbacks data_sink_callbacks = {
+  data_sink_write,
+  data_sink_close
+};
+
+void runServer(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice) {
+  using namespace httplib;
+
+  Server svr;
+
+  svr.set_exception_handler([](const Request& req, Response& res, std::exception_ptr ep) {
+    res.status = StatusCode::InternalServerError_500;
+    try {
+      std::rethrow_exception(ep);
+    } catch (std::exception& e) {
+      spdlog::error("unhandled {} -> {}\n{}", req.body, res.status, e.what());
+    } catch (...) {
+      // if you don't provide the catch (...) block for a rethrown exception pointer, 
+      // an uncaught exception will end up causing the server crash.
+      // Be careful!
+      spdlog::error("unhandled {} -> {}\n{}", req.body, res.status, "Unknown Exception");
+    }
+  });
+
+  svr.set_logger([](const Request& req, const Response& res) {
+    spdlog::debug("handled {} -> {}", req.body, res.status);
+  });
+
+  svr.Post("/tts", [&runConfig, &piperConfig, &voice](const Request& req, Response& res) {
+    json data = json::parse(req.body);
+    std::string line = data["text"];
+
+    if (runConfig.outputFormat == FORMAT_RAW || runConfig.outputFormat == FORMAT_WAV) {
+      res.set_chunked_content_provider("audio/wav", [&, line](size_t offset, DataSink& sink) -> bool {
+        piper::SynthesisResult result;
+        result.startTime = std::chrono::steady_clock::now();
+
+        WavHeader header;
+        fillWavHeader(header, voice.synthesisConfig.sampleRate, voice.synthesisConfig.sampleWidth, voice.synthesisConfig.channels, -1);
+        sink.write((char*)(&header), sizeof(header));
+
+        piper::textToAudio(piperConfig, voice, line, result, [&sink](std::vector<float_t> const& pcm32Audio) {
+          vector<int16_t> audioBuffer;
+          piper::pcm32_to_pcm16(pcm32Audio, audioBuffer);
+          sink.write((char*)(audioBuffer.data()), sizeof(int16_t) / sizeof(char) * audioBuffer.size());
+        });
+
+        sink.done();
+
+        auto endTime = std::chrono::steady_clock::now();
+        auto durationSeconds = std::chrono::duration<double>(endTime - result.startTime).count();
+        spdlog::info("Real-time factor: {} (audio={} sec, infer={} sec, total={} sec)",
+          durationSeconds / result.audioSeconds,
+          result.audioSeconds,
+          result.inferSeconds,
+          durationSeconds
+        );
+
+        return true;
+      });
+    } else if (runConfig.outputFormat == FORMAT_OPUS) {
+      res.set_chunked_content_provider("audio/opus", [&, line](size_t offset, DataSink& sink) -> bool {
+        piper::SynthesisResult result;
+        result.startTime = std::chrono::steady_clock::now();
+
+        OggOpusComments* comments = ope_comments_create();
+        OggOpusEnc* enc = ope_encoder_create_callbacks(&data_sink_callbacks, &sink,
+          comments, voice.synthesisConfig.sampleRate, voice.synthesisConfig.channels,
+          0, nullptr
+        );
+
+        if (enc == nullptr) {
+          ope_comments_destroy(comments);
+          return false;
+        }
+
+        piper::textToAudio(piperConfig, voice, line, result, [enc, &voice](std::vector<float_t> const& pcm32Audio) {
+          ope_encoder_write_float(enc, pcm32Audio.data(), pcm32Audio.size() / voice.synthesisConfig.channels);
+        });
+
+        ope_encoder_drain(enc);
+        ope_encoder_destroy(enc);
+        ope_comments_destroy(comments);
+
+        auto endTime = std::chrono::steady_clock::now();
+        auto durationSeconds = std::chrono::duration<double>(endTime - result.startTime).count();
+        spdlog::info("Real-time factor: {} (audio={} sec, infer={} sec, total={} sec)",
+          durationSeconds / result.audioSeconds,
+          result.audioSeconds,
+          result.inferSeconds,
+          durationSeconds
+        );
+
+        return true;
+      });
+    }
+  });
+
+  spdlog::info("Starting server http://{}:{}", runConfig.address, runConfig.port);
+  svr.listen(runConfig.address, runConfig.port);
+}
+
+void runCommandLine(RunConfig& runConfig, piper::PiperConfig& piperConfig, piper::Voice& voice) {
   if (runConfig.outputType == OUTPUT_DIRECTORY) {
     runConfig.outputPath = filesystem::absolute(runConfig.outputPath.value());
     spdlog::info("Output directory: {}", runConfig.outputPath.value().string());
@@ -228,6 +401,7 @@ int main(int argc, char *argv[]) {
 
   string line;
   piper::SynthesisResult result;
+  result.startTime = std::chrono::steady_clock::now();
   while (getline(cin, line)) {
     auto outputType = runConfig.outputType;
     auto speakerId = voice.synthesisConfig.speakerId;
@@ -244,20 +418,20 @@ int main(int argc, char *argv[]) {
         // Override output WAV file path
         outputType = OUTPUT_FILE;
         maybeOutputPath =
-            filesystem::path(lineRoot["output_file"].get<std::string>());
+          filesystem::path(lineRoot["output_file"].get<std::string>());
       }
 
       if (lineRoot.contains("speaker_id")) {
         // Override speaker id
         voice.synthesisConfig.speakerId =
-            lineRoot["speaker_id"].get<piper::SpeakerId>();
+          lineRoot["speaker_id"].get<piper::SpeakerId>();
       } else if (lineRoot.contains("speaker")) {
         // Resolve to id using speaker id map
         auto speakerName = lineRoot["speaker"].get<std::string>();
         if ((voice.modelConfig.speakerIdMap) &&
-            (voice.modelConfig.speakerIdMap->count(speakerName) > 0)) {
+          (voice.modelConfig.speakerIdMap->count(speakerName) > 0)) {
           voice.synthesisConfig.speakerId =
-              (*voice.modelConfig.speakerIdMap)[speakerName];
+            (*voice.modelConfig.speakerIdMap)[speakerName];
         } else {
           spdlog::warn("No speaker named: {}", speakerName);
         }
@@ -278,7 +452,7 @@ int main(int argc, char *argv[]) {
 
       // Output audio to automatically-named WAV file in a directory
       ofstream audioFile(outputPath.string(), ios::binary);
-      piper::textToWavFile(piperConfig, voice, line, audioFile, result);
+      textToWavFile(piperConfig, voice, line, audioFile, result);
       cout << outputPath.string() << endl;
     } else if (outputType == OUTPUT_FILE) {
       if (!maybeOutputPath || maybeOutputPath->empty()) {
@@ -301,19 +475,18 @@ int main(int argc, char *argv[]) {
 
       // Output audio to WAV file
       ofstream audioFile(outputPath.string(), ios::binary);
-      piper::textToWavFile(piperConfig, voice, line, audioFile, result);
+      textToWavFile(piperConfig, voice, line, audioFile, result);
       cout << outputPath.string() << endl;
     } else if (outputType == OUTPUT_STDOUT) {
       // Output WAV to stdout
-      piper::textToWavFile(piperConfig, voice, line, cout, result);
+      textToWavFile(piperConfig, voice, line, cout, result);
     } else if (outputType == OUTPUT_RAW) {
       // Raw output to stdout
       mutex mutAudio;
       condition_variable cvAudio;
       bool audioReady = false;
       bool audioFinished = false;
-      vector<int16_t> audioBuffer;
-      vector<int16_t> sharedAudioBuffer;
+      vector<float_t> sharedAudioBuffer;
 
 #ifdef _WIN32
       // Needed on Windows to avoid terminal conversions
@@ -322,21 +495,19 @@ int main(int argc, char *argv[]) {
 #endif
 
       thread rawOutputThread(rawOutputProc, ref(sharedAudioBuffer),
-                             ref(mutAudio), ref(cvAudio), ref(audioReady),
-                             ref(audioFinished));
-      auto audioCallback = [&audioBuffer, &sharedAudioBuffer, &mutAudio,
-                            &cvAudio, &audioReady]() {
+        ref(mutAudio), ref(cvAudio), ref(audioReady),
+        ref(audioFinished));
+
+      piper::textToAudio(piperConfig, voice, line, result, [&sharedAudioBuffer, &mutAudio,
+        &cvAudio, &audioReady](std::vector<float_t> const& pcm32Audio) {
         // Signal thread that audio is ready
-        {
-          unique_lock lockAudio(mutAudio);
-          copy(audioBuffer.begin(), audioBuffer.end(),
-               back_inserter(sharedAudioBuffer));
-          audioReady = true;
-          cvAudio.notify_one();
-        }
-      };
-      piper::textToAudio(piperConfig, voice, line, audioBuffer, result,
-                         audioCallback);
+          {
+            unique_lock lockAudio(mutAudio);
+            copy(pcm32Audio.begin(), pcm32Audio.end(), back_inserter(sharedAudioBuffer));
+            audioReady = true;
+            cvAudio.notify_one();
+          }
+      });
 
       // Signal thread that there is no more audio
       {
@@ -351,23 +522,22 @@ int main(int argc, char *argv[]) {
       rawOutputThread.join();
     }
 
-    spdlog::info("Real-time factor: {} (infer={} sec, audio={} sec)",
-                 result.realTimeFactor, result.inferSeconds,
-                 result.audioSeconds);
+    auto endTime = std::chrono::steady_clock::now();
+    auto durationSeconds = std::chrono::duration<double>(endTime - result.startTime).count();
+    spdlog::info("Real-time factor: {} (audio={} sec, infer={} sec, total={} sec)",
+      durationSeconds / result.audioSeconds,
+      result.audioSeconds,
+      result.inferSeconds,
+      durationSeconds
+    );
 
     // Restore config (--json-input)
     voice.synthesisConfig.speakerId = speakerId;
 
   } // for each line
-
-  piper::terminate(piperConfig);
-
-  return EXIT_SUCCESS;
 }
 
-// ----------------------------------------------------------------------------
-
-void rawOutputProc(vector<int16_t> &sharedAudioBuffer, mutex &mutAudio,
+void rawOutputProc(vector<float_t>& sharedAudioBuffer, mutex& mutAudio,
                    condition_variable &cvAudio, bool &audioReady,
                    bool &audioFinished) {
   vector<int16_t> internalAudioBuffer;
@@ -380,8 +550,7 @@ void rawOutputProc(vector<int16_t> &sharedAudioBuffer, mutex &mutAudio,
         break;
       }
 
-      copy(sharedAudioBuffer.begin(), sharedAudioBuffer.end(),
-           back_inserter(internalAudioBuffer));
+      piper::pcm32_to_pcm16(sharedAudioBuffer, internalAudioBuffer);
 
       sharedAudioBuffer.clear();
 
@@ -397,6 +566,26 @@ void rawOutputProc(vector<int16_t> &sharedAudioBuffer, mutex &mutAudio,
   }
 
 } // rawOutputProc
+
+// Phonemize text and synthesize audio to WAV file
+void textToWavFile(piper::PiperConfig& config, piper::Voice& voice, std::string text,
+                   std::ostream& audioFile, piper::SynthesisResult& result) {
+
+  std::vector<int16_t> audioBuffer;
+  textToAudio(config, voice, text, result, [&audioBuffer](std::vector<float_t> const& pcm32Audio) {
+    piper::pcm32_to_pcm16(pcm32Audio, audioBuffer);
+  });
+
+  // Write WAV
+  auto synthesisConfig = voice.synthesisConfig;
+  writeWavHeader(synthesisConfig.sampleRate, synthesisConfig.sampleWidth,
+                 synthesisConfig.channels, (int32_t)audioBuffer.size(),
+                 audioFile);
+
+  audioFile.write((const char*)audioBuffer.data(),
+                  sizeof(int16_t) * audioBuffer.size());
+
+} /* textToWavFile */
 
 // ----------------------------------------------------------------------------
 
@@ -419,6 +608,8 @@ void printUsage(char *argv[]) {
   cerr << "   --output_raw                  output raw audio to stdout as it "
           "becomes available"
        << endl;
+  cerr << "   --opus                        output audio will be compressed with opus format"
+    << endl;
   cerr << "   -s  NUM   --speaker     NUM   id of speaker (default: 0)" << endl;
   cerr << "   --noise_scale           NUM   generator noise (default: 0.667)"
        << endl;
@@ -439,6 +630,12 @@ void printUsage(char *argv[]) {
        << endl;
   cerr << "   --use-cuda                    use CUDA execution provider"
        << endl;
+  cerr << "   --server                      (experimental) start as HTTP server"
+    << endl;
+  cerr << "   --address                     (experimental) start as HTTP server on address"
+    << endl;
+  cerr << "   --port                        (experimental) start as HTTP server on port"
+    << endl;
   cerr << "   --debug                       print DEBUG messages to the console"
        << endl;
   cerr << "   -q       --quiet              disable logging" << endl;
@@ -482,6 +679,9 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
       runConfig.outputPath = filesystem::path(argv[++i]);
     } else if (arg == "--output_raw" || arg == "--output-raw") {
       runConfig.outputType = OUTPUT_RAW;
+      runConfig.outputFormat = FORMAT_RAW;
+    } else if (arg == "--opus") {
+      runConfig.outputFormat = FORMAT_OPUS;
     } else if (arg == "-s" || arg == "--speaker") {
       ensureArg(argc, argv, i);
       runConfig.speakerId = (piper::SpeakerId)stol(argv[++i]);
@@ -503,8 +703,8 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
       auto phonemeStr = std::string(argv[++i]);
       if (!piper::isSingleCodepoint(phonemeStr)) {
         std::cerr << "Phoneme '" << phonemeStr
-                  << "' is not a single codepoint (--phoneme_silence)"
-                  << std::endl;
+          << "' is not a single codepoint (--phoneme_silence)"
+          << std::endl;
         exit(1);
       }
 
@@ -524,6 +724,14 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
       runConfig.jsonInput = true;
     } else if (arg == "--use_cuda" || arg == "--use-cuda") {
       runConfig.useCuda = true;
+    } else if (arg == "--server") {
+      runConfig.server = true;
+    } else if (arg == "--address") {
+      ensureArg(argc, argv, i);
+      runConfig.address = std::string(argv[++i]);
+    } else if (arg == "--port") {
+      ensureArg(argc, argv, i);
+      runConfig.port = atoi(argv[++i]);
     } else if (arg == "--version") {
       std::cout << piper::getVersion() << std::endl;
       exit(0);
